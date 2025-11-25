@@ -18,3 +18,5 @@ frontend/tsconfig.node.json
 frontend/vite.config.tf
 frontend/node_modules/postcss.config.js
 nginx/nginx.conf
+backend/app/__pycache__/
+frontend/node_modules/

@@ -1,6 +1,14 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv, find_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-import os
+
+# Charge automatiquement les variables d'environnement depuis .env
+_env_path = find_dotenv(str(Path(__file__).resolve().parents[2] / ".env"))
+if _env_path:
+    load_dotenv(_env_path)
 
 DB_USER = os.environ["DB_USER"]
 DB_PASS = os.environ["DB_PASS"]

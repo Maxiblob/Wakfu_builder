@@ -183,16 +183,30 @@ def _compute_object_scores(df: pd.DataFrame, poids: StatWeights) -> pd.Series:
     return positive_stats.mul(weights, axis=1).sum(axis=1)
 
 
-def load_equipements(db: Session) -> pd.DataFrame:
-    """Load every equipment entry from the database into a dataframe."""
-    items = db.query(wakfu_equipement).all()
+def load_equipements(db: Session, level_max: int | None = None) -> pd.DataFrame:
+    """Load equipment entries from the database as a dataframe, filtered and deduped."""
+    query = db.query(wakfu_equipement)
+    if level_max is not None and level_max > 0:
+        query = query.filter(wakfu_equipement.niveau <= level_max)
+
+    items = query.all()
     if not items:
         return pd.DataFrame()
+
     records = [
         {col.name: getattr(item, col.name) for col in wakfu_equipement.__table__.columns}
         for item in items
     ]
-    return pd.DataFrame.from_records(records)
+    df = pd.DataFrame.from_records(records)
+
+    # Dedupe sur id si présent, sinon sur (nom, type, niveau)
+    if "id" in df.columns:
+        df = df.drop_duplicates(subset=["id"])
+    else:
+        df = df.drop_duplicates(subset=["nom", "type", "niveau"], keep="first")
+
+    df = df.reset_index(drop=True)
+    return df
 
 
 def score_objet(row: pd.Series, poids: StatWeights, allow_neg_score: bool = False) -> float:
@@ -223,7 +237,7 @@ def score_build(df: pd.DataFrame, indices: SlotIndices, poids: StatWeights) -> t
     if not stats_df.empty:
         numeric_stats = stats_df.apply(pd.to_numeric, errors="coerce").fillna(0.0)
         totals = numeric_stats.sum(axis=0)
-        stats_sum = {column: float(value) for column, value in totals.items()}
+        stats_sum = {str(column): float(value) for column, value in totals.items()}
     score = sum(max(stats_sum.get(stat, 0.0), 0.0) * weight for stat, weight in poids.items())
     return score, stats_sum
 
@@ -243,11 +257,13 @@ def est_build_valide(df: pd.DataFrame, indices: SlotIndices) -> tuple[bool, str]
             return False, f"Missing required slot: {slot}"
 
     ring_items = [items.get(slot) for slot in RING_SLOTS if slot in items]
-    if len(ring_items) != len(RING_SLOTS):
+    # Ensure both ring slots are present and non-None
+    if len(ring_items) != len(RING_SLOTS) or any(item is None for item in ring_items):
         return False, "Exactly two rings are required"
     ring_a, ring_b = ring_items
-    id_a = ring_a.get("id", ring_a.get("nom"))
-    id_b = ring_b.get("id", ring_b.get("nom"))
+    # Safely extract an identifier, preferring "id" then "nom"
+    id_a = ring_a.get("id", ring_a.get("nom")) if ring_a is not None else None
+    id_b = ring_b.get("id", ring_b.get("nom")) if ring_b is not None else None
     if id_a == id_b:
         return False, "Rings must be different"
 
@@ -271,7 +287,19 @@ def est_build_valide(df: pd.DataFrame, indices: SlotIndices) -> tuple[bool, str]
     return True, "OK"
 
 
-def build_pools(df: pd.DataFrame, top_k: int = TOP_K_PER_SLOT, poids: StatWeights = POIDS_STATS) -> Pools:
+LEGENDARY_VALUES = {"légendaire", "legendaire", "lÃ©gendaire"}
+
+
+def _normalise_rarete(value: Any) -> str:
+    return str(value).strip().lower()
+
+
+def build_pools(
+    df: pd.DataFrame,
+    top_k: int = TOP_K_PER_SLOT,
+    poids: StatWeights = POIDS_STATS,
+    force_legendary: bool = False,
+) -> Pools:
     """Build ranked equipment pools per slot to reduce combinatorics."""
     if df.empty:
         return {}
@@ -281,16 +309,35 @@ def build_pools(df: pd.DataFrame, top_k: int = TOP_K_PER_SLOT, poids: StatWeight
     pools: Pools = {}
 
     for equipment_type, group in data.groupby("type"):
+        # Ensure the group key is a string (pandas group keys can be non-str like dates/timestamps)
+        equipment_key = str(equipment_type)
+        group = group.copy()
+        if force_legendary:
+            rarete_norm = group["rarete"].map(_normalise_rarete)
+            legend_mask = rarete_norm.isin(LEGENDARY_VALUES)
+            if legend_mask.any():
+                group = group.loc[legend_mask]
+
         top_group = group.sort_values("Score", ascending=False).head(top_k).copy()
-        if equipment_type == RING_SLOT:
+        if equipment_key == RING_SLOT:
             pools[RING_SLOTS[0]] = top_group
             pools[RING_SLOTS[1]] = top_group
-        elif equipment_type in {TWO_HAND, ONE_HAND, OFF_HAND} or equipment_type in REQUIRED_SLOTS:
-            pools[equipment_type] = top_group
+        elif equipment_key in {TWO_HAND, ONE_HAND, OFF_HAND} or equipment_key in REQUIRED_SLOTS:
+            pools[equipment_key] = top_group
 
     missing = [slot for slot in REQUIRED_SLOTS if slot not in pools]
     if missing:
         print(f"[WARNING] Missing pools for slots: {missing}")
+
+    # Nettoyage : retire les pools vides et borne les scores négatifs à zéro
+    for key, pool in list(pools.items()):
+        if pool.empty:
+            pools.pop(key, None)
+            continue
+        numeric_cols = pool.select_dtypes(include=["number"]).columns
+        pool[numeric_cols] = pool[numeric_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+        pool[numeric_cols] = pool[numeric_cols].clip(lower=0.0)
+        pools[key] = pool
 
     return pools
 
@@ -391,6 +438,7 @@ def run_algo_gen(
     elite: int = 3,
     proba_mutation: float = 0.2,
     verbose: bool = True,
+    stagnation_patience: int = 12,
 ) -> Individual:
     """Run a simple genetic algorithm to search for a high scoring build."""
     if pop_size <= 0:
@@ -409,6 +457,9 @@ def run_algo_gen(
         individual.fitness = evaluate(df, individual)
         population.append(individual)
 
+    best_score_global = float("-inf")
+    stagnation_steps = 0
+
     for generation in range(generations_max):
         population.sort(key=lambda individual: individual.fitness, reverse=True)
         new_population: list[Individual] = population[:elite]
@@ -426,6 +477,24 @@ def run_algo_gen(
 
         population = new_population
 
+        # Anti-stagnation: si aucun progrès pendant plusieurs générations, réinjecter de l'aléatoire
+        current_best = population[0].fitness
+        if current_best > best_score_global:
+            best_score_global = current_best
+            stagnation_steps = 0
+        else:
+            stagnation_steps += 1
+            if stagnation_steps >= stagnation_patience:
+                # Remplacer ~30% de la population par de nouveaux individus
+                replace_count = max(1, pop_size // 3)
+                for _ in range(replace_count):
+                    genes = random_build(pools)
+                    indiv = Individual(genes=genes, fitness=evaluate(df, Individual(genes=genes, fitness=0.0)))
+                    population.append(indiv)
+                population.sort(key=lambda individual: individual.fitness, reverse=True)
+                population = population[:pop_size]
+                stagnation_steps = 0
+
         if verbose:
             best_individual = population[0]
             print(f"Gen {generation + 1}/{generations_max} - best score: {best_individual.fitness:.2f}")
@@ -434,23 +503,35 @@ def run_algo_gen(
     return population[0]
 
 
-def run_optimizer(db: Session, level: int) -> tuple[list[dict[str, Any]], BuildStats, float]:
+def run_optimizer(
+    db: Session,
+    level: int,
+    top_k: int = TOP_K_PER_SLOT,
+    pop_size: int = 60,
+    generations_max: int = 80,
+    elite: int = 3,
+    proba_mutation: float = 0.2,
+    verbose: bool = True,
+    force_legendary: bool = False,
+) -> tuple[list[dict[str, Any]], BuildStats, float]:
     """Complete optimisation pipeline returning the best build, stats, and score."""
-    df_all = load_equipements(db)
+    df_all = load_equipements(db, level_max=level)
     if df_all.empty:
         return [], {}, 0.0
 
-    if "niveau" in df_all.columns:
-        df_all = df_all[df_all["niveau"] <= level].copy()
-
-    if df_all.empty:
-        return [], {}, 0.0
-
-    pools = build_pools(df_all, TOP_K_PER_SLOT)
+    pools = build_pools(df_all, top_k, POIDS_STATS, force_legendary=force_legendary)
     if not pools:
         return [], {}, 0.0
 
-    best = run_algo_gen(df_all, pools, pop_size=60, generations_max=80, elite=3)
+    best = run_algo_gen(
+        df_all,
+        pools,
+        pop_size=pop_size,
+        generations_max=generations_max,
+        elite=elite,
+        proba_mutation=proba_mutation,
+        verbose=verbose,
+    )
     best_score, best_stats = score_build(df_all, best.genes, POIDS_STATS)
 
     build: list[dict[str, Any]] = []
