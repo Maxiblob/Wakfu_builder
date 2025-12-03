@@ -18,7 +18,62 @@
     (import.meta as any).env?.VITE_API_URL ??
     "http://localhost:8000";
 
-  let level = 200;
+  const statOptions = [
+    { key: "pa", label: "PA" },
+    { key: "pm", label: "PM" },
+    { key: "pw", label: "PW" },
+    { key: "portee", label: "Portee" },
+    { key: "controle", label: "Controle" },
+    { key: "pv", label: "Points de vie" },
+    { key: "coup_critique", label: "Coup critique" },
+    { key: "maitrise_melee", label: "Maitrise melee" },
+    { key: "maitrise_distance", label: "Maitrise distance" },
+    { key: "maitrise_berserk", label: "Maitrise berserk" },
+    { key: "maitrise_critique", label: "Maitrise critique" },
+    { key: "maitrise_dos", label: "Maitrise dos" },
+    { key: "maitrise_1_element", label: "Maitrise 1 element" },
+    { key: "maitrise_2_elements", label: "Maitrise 2 elements" },
+    { key: "maitrise_3_elements", label: "Maitrise 3 elements" },
+    { key: "maitrise_elementaire", label: "Maitrise elementaire" },
+    { key: "maitrise_feu", label: "Maitrise feu" },
+    { key: "maitrise_eau", label: "Maitrise eau" },
+    { key: "maitrise_terre", label: "Maitrise terre" },
+    { key: "maitrise_air", label: "Maitrise air" },
+    { key: "maitrise_soin", label: "Maitrise soin" },
+    { key: "tacle", label: "Tacle" },
+    { key: "esquive", label: "Esquive" },
+    { key: "initiative", label: "Initiative" },
+    { key: "parade", label: "Parade" },
+    { key: "resistance_elementaire", label: "Resistance elementaire" },
+    { key: "resistance_1_element", label: "Resistance 1 element" },
+    { key: "resistance_2_elements", label: "Resistance 2 elements" },
+    { key: "resistance_3_elements", label: "Resistance 3 elements" },
+    { key: "resistance_feu", label: "Resistance feu" },
+    { key: "resistance_eau", label: "Resistance eau" },
+    { key: "resistance_terre", label: "Resistance terre" },
+    { key: "resistance_air", label: "Resistance air" },
+    { key: "resistance_critique", label: "Resistance critique" },
+    { key: "resistance_dos", label: "Resistance dos" },
+    { key: "armure_donnee", label: "Armure donnee" },
+    { key: "armure_recue", label: "Armure recue" },
+    { key: "volonte", label: "Volonte" },
+  ];
+
+  let level = 230;
+  let selectedStats: string[] = [];
+  let effectiveMasteryInput = "";
+  let effectiveSelection: string[] = [];
+  let effectiveWeight = 30;
+  let zeroComponentWeights = false;
+  let forceLegendary = false;
+  let requireEpic = false;
+  let requireRelic = false;
+  let solver: "ga" | "cp" = "ga";
+  let topK = 25;
+  let popSize = 60;
+  let generations = 80;
+  let elite = 3;
+  let probaMutation = 0.2;
   let loading = false;
   let error: string | null = null;
   let score: number | null = null;
@@ -32,11 +87,56 @@
     return rarityColors[rarete.toLowerCase()] ?? "#e5e7eb";
   };
 
+  const toggleStat = (key: string) => {
+    selectedStats = selectedStats.includes(key)
+      ? selectedStats.filter((stat) => stat !== key)
+      : [...selectedStats, key];
+  };
+
+  const toggleEffective = (key: string) => {
+    effectiveSelection = effectiveSelection.includes(key)
+      ? effectiveSelection.filter((s) => s !== key)
+      : [...effectiveSelection, key];
+  };
+
   async function generateBuild() {
     loading = true;
     error = null;
     try {
-      const res = await fetch(`${API_URL}/builds/optimise/${level}`);
+      const params = new URLSearchParams();
+      selectedStats.forEach((stat) => params.append("stats", stat));
+      // maîtrise effective (liste séparée par virgules ou points-virgules + sélection)
+      const effectiveList = [
+        ...effectiveSelection,
+        ...effectiveMasteryInput
+          .split(/[,;]+/)
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ];
+      // dédoublonne la liste
+      Array.from(new Set(effectiveList)).forEach((stat) =>
+        params.append("effective_mastery", stat)
+      );
+
+      params.set("effective_weight", String(effectiveWeight));
+      params.set("zero_component_weights", String(zeroComponentWeights));
+      params.set("force_legendary", String(forceLegendary));
+      params.set("require_epic", String(requireEpic));
+      params.set("require_relic", String(requireRelic));
+      params.set("solver", solver);
+      if (solver === "cp") {
+        params.set("verbose", "true");
+      }
+      params.set("top_k", String(topK));
+      params.set("pop_size", String(popSize));
+      params.set("generations", String(generations));
+      params.set("elite", String(elite));
+      params.set("proba_mutation", String(probaMutation));
+      const query = params.toString();
+
+      const res = await fetch(
+        `${API_URL}/builds/optimise/${level}${query ? `?${query}` : ""}`
+      );
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
@@ -82,6 +182,114 @@
             Generer un build
           {/if}
         </button>
+      </div>
+    </div>
+    <div class="stat-selector">
+      <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <p class="muted" style="margin: 0;">Stats a maximiser (optionnel)</p>
+        {#if selectedStats.length}
+          <span class="tag">{selectedStats.length} selectionnees</span>
+        {/if}
+      </div>
+      <div class="chip-grid">
+        {#each statOptions as option}
+          <button
+            class={`chip ${selectedStats.includes(option.key) ? "selected" : ""}`}
+            type="button"
+            on:click={() => toggleStat(option.key)}
+          >
+            <span>{option.label}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+
+    <div class="card" style="padding: 1rem; margin-top: 1rem; border: 1px solid #e5e7eb;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem;">
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          Maîtrise effective (liste, séparée par virgules)
+          <input
+            class="input"
+            placeholder="maitrise_distance, maitrise_3_elements, maitrise_feu..."
+            bind:value={effectiveMasteryInput}
+          />
+        </label>
+        <div class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          Maîtrises à inclure (sélection)
+          <div class="chip-grid">
+            {#each statOptions.filter((o) => o.key.startsWith("maitrise")) as option}
+              <button
+                class={`chip ${effectiveSelection.includes(option.key) ? "selected" : ""}`}
+                type="button"
+                on:click={() => toggleEffective(option.key)}
+              >
+                <span>{option.label}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          Poids maîtrise effective
+          <input class="input" type="number" step="0.5" bind:value={effectiveWeight} />
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={zeroComponentWeights} />
+          Ignorer le poids des composantes
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={forceLegendary} />
+          Forcer les items légendaires
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={requireEpic} />
+          Exiger un item épique
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={requireRelic} />
+          Exiger un item relique
+        </label>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          Mode d'optimisation
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <button
+              type="button"
+              class={`chip ${solver === "ga" ? "selected" : ""}`}
+              on:click={() => (solver = "ga")}
+            >
+              Génétique
+            </button>
+            <button
+              type="button"
+              class={`chip ${solver === "cp" ? "selected" : ""}`}
+              on:click={() => (solver = "cp")}
+            >
+              Contraintes (CP-SAT)
+            </button>
+          </div>
+        </label>
+      </div>
+
+      <div style="margin-top: 0.75rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.5rem;">
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          top_k
+          <input class="input" type="number" min="1" max="200" bind:value={topK} />
+        </label>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          population
+          <input class="input" type="number" min="2" max="500" bind:value={popSize} />
+        </label>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          générations
+          <input class="input" type="number" min="1" max="500" bind:value={generations} />
+        </label>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          elite
+          <input class="input" type="number" min="1" max="20" bind:value={elite} />
+        </label>
+        <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
+          proba mutation
+          <input class="input" type="number" min="0" max="1" step="0.05" bind:value={probaMutation} />
+        </label>
       </div>
     </div>
     {#if error}

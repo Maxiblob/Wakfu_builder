@@ -123,3 +123,37 @@ a {
   padding: 1rem;
   overflow-x: auto;
 }
+
+.stat-selector {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.chip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.chip {
+  border: 1px solid #e5e7eb;
+  background: white;
+  border-radius: 12px;
+  padding: 0.45rem 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.chip:hover {
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+}
+
+.chip.selected {
+  border-color: #2563eb;
+  box-shadow: 0 8px 20px rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}

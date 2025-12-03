@@ -57,6 +57,7 @@ declare module '$env/static/private' {
 	export const _CONDA_ROOT: string;
 	export const COLOR: string;
 	export const NVM_DIR: string;
+	export const DEBUGINFOD_URLS: string;
 	export const WAYLAND_DISPLAY: string;
 	export const LOGNAME: string;
 	export const NAME: string;
@@ -166,6 +167,7 @@ declare module '$env/dynamic/private' {
 		_CONDA_ROOT: string;
 		COLOR: string;
 		NVM_DIR: string;
+		DEBUGINFOD_URLS: string;
 		WAYLAND_DISPLAY: string;
 		LOGNAME: string;
 		NAME: string;

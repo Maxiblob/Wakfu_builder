@@ -5,7 +5,7 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from numbers import Real
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ ONE_HAND = "Arme 1 Main"
 OFF_HAND = "Seconde Main"
 
 TOP_K_PER_SLOT = 25
+LEGENDARY_VALUES = {"légendaire", "legendaire", "lÃ©gendaire"}
 
 POIDS_STATS: dict[str, float] = {
     "pa": 600,
@@ -79,6 +80,54 @@ StatWeights = Mapping[str, float]
 SlotIndices = dict[str, int]
 BuildStats = dict[str, float]
 Pools = dict[str, pd.DataFrame]
+
+
+def _resolve_weights(target_stats: Iterable[str] | None, base_weights: StatWeights) -> dict[str, float]:
+    """Return a weight map prioritising only the requested stats when provided."""
+    if not target_stats:
+        return dict(base_weights)
+
+    normalized = {str(stat).strip().lower() for stat in target_stats if str(stat).strip()}
+    resolved: dict[str, float] = {}
+    for stat, weight in base_weights.items():
+        resolved[stat] = float(weight) if stat in normalized else 0.0
+
+    # If a stat name isn't known, still allow it with a neutral weight
+    for extra in normalized - set(base_weights):
+        resolved[extra] = 1.0
+    return resolved
+
+
+def _add_effective_mastery(
+    df: pd.DataFrame,
+    fields: Iterable[str] | None,
+    weight: float,
+    zero_component_weights: bool,
+    poids: dict[str, float],
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Add a derived 'maitrise_effective' column from selected mastery fields."""
+    if not fields:
+        return df, poids
+
+    candidates = [f for f in fields if f in df.columns]
+    if not candidates:
+        return df, poids
+
+    df = df.copy()
+    df["maitrise_effective"] = (
+        df[candidates]
+        .apply(pd.to_numeric, errors="coerce")
+        .fillna(0.0)
+        .sum(axis=1)
+    )
+
+    new_weights = dict(poids)
+    if zero_component_weights:
+        for stat in candidates:
+            if stat in new_weights:
+                new_weights[stat] = 0.0
+    new_weights["maitrise_effective"] = float(weight)
+    return df, new_weights
 
 
 def _safe_float(value: Any) -> float:
@@ -242,8 +291,13 @@ def score_build(df: pd.DataFrame, indices: SlotIndices, poids: StatWeights) -> t
     return score, stats_sum
 
 
-def est_build_valide(df: pd.DataFrame, indices: SlotIndices) -> tuple[bool, str]:
-    """Validate slot coverage, ring uniqueness, rarity limits, and weapon pairing."""
+def est_build_valide(
+    df: pd.DataFrame,
+    indices: SlotIndices,
+    require_epic: bool = False,
+    require_relic: bool = False,
+) -> tuple[bool, str]:
+    """Validate slot coverage, ring uniqueness, rarity limits, weapon pairing, and optional relic/epic presence."""
     if not indices:
         return False, "No equipment selected"
 
@@ -273,6 +327,11 @@ def est_build_valide(df: pd.DataFrame, indices: SlotIndices) -> tuple[bool, str]
     if sum(r == "Relique" for r in rarities) > 1:
         return False, "At most one relic item is allowed"
 
+    if require_epic and not any(r == "Epique" for r in rarities):
+        return False, "At least one epic item is required"
+    if require_relic and not any(r == "Relique" for r in rarities):
+        return False, "At least one relic item is required"
+
     weapon_slots = [slot for slot in items if slot.startswith("Arme") or slot.startswith("Seconde")]
     weapon_types = [str(items[slot].get("type", "")) for slot in weapon_slots]
     has_two_hand = any(TWO_HAND in weapon_type for weapon_type in weapon_types)
@@ -286,12 +345,31 @@ def est_build_valide(df: pd.DataFrame, indices: SlotIndices) -> tuple[bool, str]
 
     return True, "OK"
 
-
-LEGENDARY_VALUES = {"légendaire", "legendaire", "lÃ©gendaire"}
-
-
 def _normalise_rarete(value: Any) -> str:
     return str(value).strip().lower()
+
+
+def _prefer_legendary_variants(group: pd.DataFrame) -> pd.DataFrame:
+    """When force_legendary is enabled, prefer legendary rows per item name if available."""
+    if group.empty:
+        return group
+    legend_mask = group["rarete"].map(_normalise_rarete).isin(LEGENDARY_VALUES)
+    if not legend_mask.any():
+        return group
+
+    # Pour chaque nom, si une version légendaire existe on la garde, sinon on garde la meilleure
+    chosen_rows = []
+    for name, sub in group.groupby("nom"):
+        sub_with_score = sub.copy()
+        if "Score" not in sub_with_score.columns:
+            sub_with_score["Score"] = _compute_object_scores(sub_with_score, POIDS_STATS)
+        sub_with_score = sub_with_score.sort_values("Score", ascending=False)
+        legend_subset = sub_with_score[sub_with_score["rarete"].map(_normalise_rarete).isin(LEGENDARY_VALUES)]
+        if not legend_subset.empty:
+            chosen_rows.append(legend_subset.iloc[0])
+        else:
+            chosen_rows.append(sub_with_score.iloc[0])
+    return pd.DataFrame(chosen_rows)
 
 
 def build_pools(
@@ -313,10 +391,9 @@ def build_pools(
         equipment_key = str(equipment_type)
         group = group.copy()
         if force_legendary:
-            rarete_norm = group["rarete"].map(_normalise_rarete)
-            legend_mask = rarete_norm.isin(LEGENDARY_VALUES)
-            if legend_mask.any():
-                group = group.loc[legend_mask]
+            # Préfère les versions légendaires pour un même nom si disponibles,
+            # sans exclure les autres raretés (épique/relique) si aucune version légendaire n'existe.
+            group = _prefer_legendary_variants(group)
 
         top_group = group.sort_values("Score", ascending=False).head(top_k).copy()
         if equipment_key == RING_SLOT:
@@ -385,12 +462,18 @@ class Individual:
     fitness: float
 
 
-def evaluate(df: pd.DataFrame, indiv: Individual) -> float:
+def evaluate(
+    df: pd.DataFrame,
+    indiv: Individual,
+    poids: StatWeights,
+    require_epic: bool = False,
+    require_relic: bool = False,
+) -> float:
     """Evaluate an individual build by returning its weighted score."""
-    is_valid, _ = est_build_valide(df, indiv.genes)
+    is_valid, _ = est_build_valide(df, indiv.genes, require_epic=require_epic, require_relic=require_relic)
     if not is_valid:
         return float("-inf")
-    score, _ = score_build(df, indiv.genes, POIDS_STATS)
+    score, _ = score_build(df, indiv.genes, poids)
     return score
 
 
@@ -439,6 +522,9 @@ def run_algo_gen(
     proba_mutation: float = 0.2,
     verbose: bool = True,
     stagnation_patience: int = 12,
+    poids: StatWeights = POIDS_STATS,
+    require_epic: bool = False,
+    require_relic: bool = False,
 ) -> Individual:
     """Run a simple genetic algorithm to search for a high scoring build."""
     if pop_size <= 0:
@@ -454,7 +540,7 @@ def run_algo_gen(
     for _ in range(pop_size):
         genes = random_build(pools)
         individual = Individual(genes=genes, fitness=0.0)
-        individual.fitness = evaluate(df, individual)
+        individual.fitness = evaluate(df, individual, poids, require_epic=require_epic, require_relic=require_relic)
         population.append(individual)
 
     best_score_global = float("-inf")
@@ -472,7 +558,7 @@ def run_algo_gen(
             child_genes = crossover(parent1, parent2, pools)
             child_genes = mutate(child_genes, pools, proba_mutation)
             child = Individual(genes=child_genes, fitness=0.0)
-            child.fitness = evaluate(df, child)
+            child.fitness = evaluate(df, child, poids, require_epic=require_epic, require_relic=require_relic)
             new_population.append(child)
 
         population = new_population
@@ -489,7 +575,16 @@ def run_algo_gen(
                 replace_count = max(1, pop_size // 3)
                 for _ in range(replace_count):
                     genes = random_build(pools)
-                    indiv = Individual(genes=genes, fitness=evaluate(df, Individual(genes=genes, fitness=0.0)))
+                    indiv = Individual(
+                        genes=genes,
+                        fitness=evaluate(
+                            df,
+                            Individual(genes=genes, fitness=0.0),
+                            poids,
+                            require_epic=require_epic,
+                            require_relic=require_relic,
+                        ),
+                    )
                     population.append(indiv)
                 population.sort(key=lambda individual: individual.fitness, reverse=True)
                 population = population[:pop_size]
@@ -513,13 +608,30 @@ def run_optimizer(
     proba_mutation: float = 0.2,
     verbose: bool = True,
     force_legendary: bool = False,
+    target_stats: Iterable[str] | None = None,
+    effective_mastery: Iterable[str] | None = None,
+    effective_weight: float = 10.0,
+    zero_component_weights: bool = False,
+    require_epic: bool = False,
+    require_relic: bool = False,
 ) -> tuple[list[dict[str, Any]], BuildStats, float]:
     """Complete optimisation pipeline returning the best build, stats, and score."""
+    poids = _resolve_weights(target_stats, POIDS_STATS)
+
     df_all = load_equipements(db, level_max=level)
     if df_all.empty:
         return [], {}, 0.0
 
-    pools = build_pools(df_all, top_k, POIDS_STATS, force_legendary=force_legendary)
+    # Ajout d'une maîtrise effective dérivée (somme des champs fournis)
+    df_all, poids = _add_effective_mastery(
+        df_all,
+        effective_mastery,
+        weight=effective_weight,
+        zero_component_weights=zero_component_weights,
+        poids=poids,
+    )
+
+    pools = build_pools(df_all, top_k, poids, force_legendary=force_legendary)
     if not pools:
         return [], {}, 0.0
 
@@ -531,8 +643,11 @@ def run_optimizer(
         elite=elite,
         proba_mutation=proba_mutation,
         verbose=verbose,
+        poids=poids,
+        require_epic=require_epic,
+        require_relic=require_relic,
     )
-    best_score, best_stats = score_build(df_all, best.genes, POIDS_STATS)
+    best_score, best_stats = score_build(df_all, best.genes, poids)
 
     build: list[dict[str, Any]] = []
     for idx in best.genes.values():
