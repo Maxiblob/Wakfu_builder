@@ -68,7 +68,9 @@
   let forceLegendary = false;
   let requireEpic = false;
   let requireRelic = false;
-  let solver: "ga" | "cp" = "ga";
+  let solver: "ga" | "cp" = "cp";
+  let prioritizePA = false;
+  let prioritizePM = false;
   let topK = 25;
   let popSize = 60;
   let generations = 80;
@@ -79,6 +81,8 @@
   let score: number | null = null;
   let stats: Record<string, number> | null = null;
   let items: Item[] = [];
+  let copyMessage = "";
+  let copiedItemId: number | null = null;
 
   const readableKey = (key: string) => key.replace(/_/g, " ");
 
@@ -123,6 +127,8 @@
       params.set("force_legendary", String(forceLegendary));
       params.set("require_epic", String(requireEpic));
       params.set("require_relic", String(requireRelic));
+      params.set("prioritize_pa", String(prioritizePA));
+      params.set("prioritize_pm", String(prioritizePM));
       params.set("solver", solver);
       if (solver === "cp") {
         params.set("verbose", "true");
@@ -152,7 +158,22 @@
       items = [];
     } finally {
       loading = false;
+      copyMessage = "";
     }
+  }
+
+  async function copyItemName(name: string) {
+    try {
+      await navigator.clipboard.writeText(name);
+      copyMessage = `Nom copié: ${name}`;
+    } catch (e) {
+      console.error("Clipboard error:", e);
+      copyMessage = "Impossible de copier dans le presse-papier.";
+    }
+    setTimeout(() => {
+      copyMessage = "";
+      copiedItemId = null;
+    }, 2000);
   }
 </script>
 
@@ -204,7 +225,7 @@
       </div>
     </div>
 
-    <div class="card" style="padding: 1rem; margin-top: 1rem; border: 1px solid #e5e7eb;">
+    <div class="card" style="padding: 1rem; margin-top: 1rem; border: 1px solid #e5e7eb; gap: 0.75rem; display: flex; flex-direction: column;">
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem;">
         <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
           Maîtrise effective (liste, séparée par virgules)
@@ -248,6 +269,14 @@
           <input type="checkbox" bind:checked={requireRelic} />
           Exiger un item relique
         </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={prioritizePA} />
+          Prioriser les PA
+        </label>
+        <label style="display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600;">
+          <input type="checkbox" bind:checked={prioritizePM} />
+          Prioriser les PM
+        </label>
         <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
           Mode d'optimisation
           <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
@@ -269,7 +298,7 @@
         </label>
       </div>
 
-      <div style="margin-top: 0.75rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.5rem;">
+      <div style="margin-top: 0.25rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.5rem;">
         <label class="muted" style="display: flex; flex-direction: column; gap: 0.25rem;">
           top_k
           <input class="input" type="number" min="1" max="200" bind:value={topK} />
@@ -296,6 +325,12 @@
       <p style="color: #dc2626; margin-top: 0.75rem;">{error}</p>
     {/if}
   </section>
+
+  {#if copyMessage}
+    <div class="card" style="padding: 0.75rem 1rem; border: 1px solid #d1fae5; background: #ecfdf3; color: #065f46;">
+      {copyMessage}
+    </div>
+  {/if}
 
   {#if score !== null}
     <section class="card" style="padding: 1rem 1.25rem;">
@@ -331,7 +366,21 @@
         {#each items as item}
           {#if item}
             {@const rare = (item as any).rarete as string | undefined}
-            <article class="item-card">
+            <button
+              type="button"
+              class="item-card"
+              on:click={() => {
+                copiedItemId = (item as any).id ?? null;
+                copyItemName((item as any).nom);
+              }}
+              style="cursor: pointer; text-align: left;"
+              aria-label={`Copier ${String((item as any).nom ?? "l'item")}`}
+            >
+              {#if copiedItemId === (item as any).id && copyMessage}
+                <div style="margin-bottom: 0.35rem; color: #065f46; background: #ecfdf3; border: 1px solid #d1fae5; padding: 0.4rem 0.6rem; border-radius: 8px; font-size: 0.9rem;">
+                  {copyMessage}
+                </div>
+              {/if}
               <div style="display: flex; align-items: center; justify-content: space-between;">
                 <div>
                   <h3 style="margin: 0; font-size: 1.05rem;">{(item as any).nom}</h3>
@@ -365,7 +414,7 @@
                   </li>
                 {/each}
               </ul>
-            </article>
+            </button>
           {/if}
         {/each}
       </div>

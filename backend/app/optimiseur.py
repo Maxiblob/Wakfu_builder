@@ -614,9 +614,17 @@ def run_optimizer(
     zero_component_weights: bool = False,
     require_epic: bool = False,
     require_relic: bool = False,
+    prioritize_pa: bool = False,
+    prioritize_pm: bool = False,
 ) -> tuple[list[dict[str, Any]], BuildStats, float]:
     """Complete optimisation pipeline returning the best build, stats, and score."""
     poids = _resolve_weights(target_stats, POIDS_STATS)
+
+    # Boost PA/PM if explicitly requested
+    if prioritize_pa:
+        poids["pa"] = max(poids.get("pa", 0.0), 10000.0)
+    if prioritize_pm:
+        poids["pm"] = max(poids.get("pm", 0.0), 10000.0)
 
     df_all = load_equipements(db, level_max=level)
     if df_all.empty:

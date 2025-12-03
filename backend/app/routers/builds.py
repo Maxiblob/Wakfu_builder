@@ -25,6 +25,8 @@ def get_best_build(
     require_epic: bool = False,
     require_relic: bool = False,
     solver: str = Query("ga", pattern="^(ga|cp)$"),
+    prioritize_pa: bool = False,
+    prioritize_pm: bool = False,
 ):
     if solver == "cp":
         best_build = run_optimizer_cp(
@@ -39,6 +41,8 @@ def get_best_build(
             require_epic=require_epic,
             require_relic=require_relic,
             verbose=verbose,
+            prioritize_pa=prioritize_pa,
+            prioritize_pm=prioritize_pm,
         )
     else:
         best_build = run_optimizer(
@@ -57,6 +61,8 @@ def get_best_build(
             zero_component_weights=zero_component_weights,
             require_epic=require_epic,
             require_relic=require_relic,
+            prioritize_pa=prioritize_pa,
+            prioritize_pm=prioritize_pm,
         )
     return BuildResponse(
         score=best_build[2],
