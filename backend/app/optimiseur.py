@@ -12,14 +12,6 @@ from sqlalchemy.orm import Session
 
 from app.models import wakfu_equipement
 
-
-DB_USER = "postgres"
-DB_PASS = "maxiDB"
-DB_HOST = "localhost"
-DB_PORT = "5432"
-DB_NAME = "wakfu_db"
-TABLE_NAME = "wakfu_equipement"
-
 TEXT_COLS = {"nom", "type", "rarete", "effets_supplementaires"}
 META_COLS = TEXT_COLS | {"niveau", "id"}
 
@@ -232,7 +224,12 @@ def _compute_object_scores(df: pd.DataFrame, poids: StatWeights) -> pd.Series:
     return positive_stats.mul(weights, axis=1).sum(axis=1)
 
 
-def load_equipements(db: Session, level_max: int | None = None) -> pd.DataFrame:
+def load_equipements(
+    db: Session,
+    level_max: int | None = None,
+    ban_ids: Iterable[int] | None = None,
+    ban_names: Iterable[str] | None = None,
+) -> pd.DataFrame:
     """Load equipment entries from the database as a dataframe, filtered and deduped."""
     query = db.query(wakfu_equipement)
     if level_max is not None and level_max > 0:
@@ -253,6 +250,12 @@ def load_equipements(db: Session, level_max: int | None = None) -> pd.DataFrame:
         df = df.drop_duplicates(subset=["id"])
     else:
         df = df.drop_duplicates(subset=["nom", "type", "niveau"], keep="first")
+
+    if ban_ids and "id" in df.columns:
+        df = df[~df["id"].isin(list(ban_ids))]
+    if ban_names and "nom" in df.columns:
+        ban_norm = {str(n).strip().lower() for n in ban_names}
+        df = df[df["nom"].str.strip().str.lower().map(lambda x: x not in ban_norm)]
 
     df = df.reset_index(drop=True)
     return df
@@ -616,7 +619,9 @@ def run_optimizer(
     require_relic: bool = False,
     prioritize_pa: bool = False,
     prioritize_pm: bool = False,
-) -> tuple[list[dict[str, Any]], BuildStats, float]:
+    ban_ids: Iterable[int] | None = None,
+    ban_names: Iterable[str] | None = None,
+) -> tuple[list[dict[str, Any]], BuildStats, float, list[tuple[list[dict[str, Any]], BuildStats, float]]]:
     """Complete optimisation pipeline returning the best build, stats, and score."""
     poids = _resolve_weights(target_stats, POIDS_STATS)
 
@@ -626,9 +631,9 @@ def run_optimizer(
     if prioritize_pm:
         poids["pm"] = max(poids.get("pm", 0.0), 10000.0)
 
-    df_all = load_equipements(db, level_max=level)
+    df_all = load_equipements(db, level_max=level, ban_ids=ban_ids, ban_names=ban_names)
     if df_all.empty:
-        return [], {}, 0.0
+        return [], {}, 0.0, []
 
     # Ajout d'une maîtrise effective dérivée (somme des champs fournis)
     df_all, poids = _add_effective_mastery(
@@ -641,7 +646,7 @@ def run_optimizer(
 
     pools = build_pools(df_all, top_k, poids, force_legendary=force_legendary)
     if not pools:
-        return [], {}, 0.0
+        return [], {}, 0.0, []
 
     best = run_algo_gen(
         df_all,
@@ -662,4 +667,4 @@ def run_optimizer(
         row = _get_item_row(df_all, idx)
         build.append(dict(row))
 
-    return build, best_stats, best_score
+    return build, best_stats, best_score, []

@@ -26,7 +26,7 @@ from app.optimiseur import (
 
 
 def _prefer_legendary_variants(group: pd.DataFrame) -> pd.DataFrame:
-    """Prefer a legendary row per name when it exists, otherwise keep best available."""
+    """Privilégie la version légendaire par nom si elle existe, sinon garde la meilleure disponible."""
     if group.empty:
         return group
     legend_mask = group["rarete"].map(_normalise_rarete).isin(LEGENDARY_VALUES)
@@ -53,7 +53,7 @@ def _build_pools_cp(
     poids: dict[str, float],
     force_legendary: bool,
 ) -> dict[str, pd.DataFrame]:
-    """Build ranked pools similar to GA version, for CP use."""
+    """Construit les pools triés (équivalent GA) pour une résolution CP."""
     if df.empty:
         return {}
 
@@ -90,17 +90,19 @@ def run_optimizer_cp(
     verbose: bool = False,
     prioritize_pa: bool = False,
     prioritize_pm: bool = False,
-) -> tuple[list[dict], dict[str, float], float]:
-    """Solve the equipment optimisation with CP-SAT (deterministic)."""
+    ban_ids: Iterable[int] | None = None,
+    ban_names: Iterable[str] | None = None,
+) -> tuple[list[dict], dict[str, float], float, list[tuple[list[dict], dict[str, float], float]]]:
+    """Résout l'optimisation d'équipement avec CP-SAT (déterministe)."""
     poids = _resolve_weights(target_stats, POIDS_STATS)
     if prioritize_pa:
         poids["pa"] = max(poids.get("pa", 0.0), 10000.0)
     if prioritize_pm:
         poids["pm"] = max(poids.get("pm", 0.0), 10000.0)
 
-    df_all = load_equipements(db, level_max=level)
+    df_all = load_equipements(db, level_max=level, ban_ids=ban_ids, ban_names=ban_names)
     if df_all.empty:
-        return [], {}, 0.0
+        return [], {}, 0.0, []
 
     df_all, poids = _add_effective_mastery(
         df_all,
@@ -114,9 +116,9 @@ def run_optimizer_cp(
     # Vérifie que tous les slots requis sont présents
     for slot in REQUIRED_SLOTS:
         if slot not in pools or pools[slot].empty:
-            return [], {}, 0.0
+            return [], {}, 0.0, []
     if RING_SLOTS[0] not in pools or pools[RING_SLOTS[0]].empty:
-        return [], {}, 0.0
+        return [], {}, 0.0, []
 
     model = cp_model.CpModel()
     selected: dict[str, list[cp_model.IntVar]] = {}
@@ -148,7 +150,7 @@ def run_optimizer_cp(
 
     # Anneaux différents si au moins 2 candidats
     if len(ring_pool.index) >= 2:
-        # sum of id * bools for each ring, enforce difference
+        # Somme pondérée par id pour chaque anneau, et contrainte de différence
         ids = [int(i) for i in ring_pool.index.to_list()]
         ring1_val = model.NewIntVar(min(ids), max(ids), "ring1_val")
         ring2_val = model.NewIntVar(min(ids), max(ids), "ring2_val")
@@ -231,29 +233,44 @@ def run_optimizer_cp(
         solver.parameters.cp_model_probing_level = 1
         solver.parameters.cp_model_presolve = True
 
-    result = solver.Solve(model)
-    if result not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return [], {}, 0.0
-    if verbose:
-        print("[CP] status:", solver.StatusName(result))
-        print("[CP] objective:", solver.ObjectiveValue())
-        print("[CP] stats:\n", solver.ResponseStats())
+    top_solutions: list[tuple[list[dict], dict[str, float], float]] = []
 
-    # Reconstruire le build
-    build: list[dict] = []
-    stats_sum: dict[str, float] = {}
-    for slot in all_slots:
-        pool = pools[slot if slot not in (RING_SLOTS[1],) else RING_SLOTS[0]]
-        for var, idx in zip(selected[slot], pool.index):
-            if solver.Value(var):
-                row = pool.loc[idx]
-                build.append(dict(row))
-                for col, val in row.drop(labels=list(META_COLS), errors="ignore").items():
-                    try:
-                        stats_sum[col] = stats_sum.get(col, 0.0) + float(val or 0.0)
-                    except Exception:
-                        pass
+    for _ in range(3):  # collecter jusqu'à 3 meilleures solutions faisables
+        result = solver.Solve(model)
+        if result not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            break
+        if verbose:
+            print("[CP] status:", solver.StatusName(result))
+            print("[CP] objective:", solver.ObjectiveValue())
+            print("[CP] stats:\n", solver.ResponseStats())
 
-    # Score final
-    total_score = solver.ObjectiveValue()
-    return build, stats_sum, total_score
+        build: list[dict] = []
+        stats_sum: dict[str, float] = {}
+        chosen_vars = []
+        for slot in all_slots:
+            pool = pools[slot if slot not in (RING_SLOTS[1],) else RING_SLOTS[0]]
+            for var, idx in zip(selected[slot], pool.index):
+                if solver.Value(var):
+                    chosen_vars.append(var)
+                    row = pool.loc[idx]
+                    build.append(dict(row))
+                    for col, val in row.drop(labels=list(META_COLS), errors="ignore").items():
+                        try:
+                            stats_sum[col] = stats_sum.get(col, 0.0) + float(val or 0.0)
+                        except Exception:
+                            pass
+
+        total_score = solver.ObjectiveValue()
+        top_solutions.append((build, stats_sum, total_score))
+
+        # Exclure cette solution pour chercher la suivante
+        if not chosen_vars:
+            break
+        model.Add(sum(chosen_vars) <= len(chosen_vars) - 1)
+
+    if not top_solutions:
+        return [], {}, 0.0, []
+
+    best = top_solutions[0]
+    alternatives = top_solutions[1:]
+    return best[0], best[1], best[2], alternatives

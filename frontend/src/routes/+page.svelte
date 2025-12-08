@@ -71,6 +71,8 @@
   let solver: "ga" | "cp" = "cp";
   let prioritizePA = false;
   let prioritizePM = false;
+  let bannedIds: number[] = [];
+  let bannedNames: string[] = [];
   let topK = 25;
   let popSize = 60;
   let generations = 80;
@@ -81,8 +83,16 @@
   let score: number | null = null;
   let stats: Record<string, number> | null = null;
   let items: Item[] = [];
+  type Build = { score: number | null; stats: Record<string, number> | null; items: Item[] };
+  let builds: Build[] = [];
+  let selectedBuild = 0;
   let copyMessage = "";
   let copiedItemId: number | null = null;
+
+  $: currentBuild = builds[selectedBuild] ?? { score, stats, items };
+  $: currentScore = currentBuild?.score ?? null;
+  $: currentStats = currentBuild?.stats ?? null;
+  $: currentItems = currentBuild?.items ?? [];
 
   const readableKey = (key: string) => key.replace(/_/g, " ");
 
@@ -129,6 +139,8 @@
       params.set("require_relic", String(requireRelic));
       params.set("prioritize_pa", String(prioritizePA));
       params.set("prioritize_pm", String(prioritizePM));
+      bannedIds.forEach((id) => params.append("ban_ids", String(id)));
+      bannedNames.forEach((name) => params.append("ban_names", name));
       params.set("solver", solver);
       if (solver === "cp") {
         params.set("verbose", "true");
@@ -150,6 +162,9 @@
       score = data.score ?? null;
       stats = data.stats ?? null;
       items = data.items ?? [];
+      const alternatives = (data.alternatives as Build[] | undefined) ?? [];
+      builds = [{ score, stats, items }, ...alternatives];
+      selectedBuild = 0;
     } catch (e) {
       console.error(e);
       error = "Impossible de récupérer un build. Vérifie que l'API est en ligne.";
@@ -174,6 +189,21 @@
       copyMessage = "";
       copiedItemId = null;
     }, 2000);
+  }
+
+  function banItem(item: Item) {
+    const id = (item as any).id;
+    const nom = String((item as any).nom ?? "");
+    if (id !== undefined && id !== null && !bannedIds.includes(Number(id))) {
+      bannedIds = [...bannedIds, Number(id)];
+    } else if (nom && !bannedNames.includes(nom)) {
+      bannedNames = [...bannedNames, nom];
+    }
+  }
+
+  function clearBanned() {
+    bannedIds = [];
+    bannedNames = [];
   }
 </script>
 
@@ -320,11 +350,50 @@
           <input class="input" type="number" min="0" max="1" step="0.05" bind:value={probaMutation} />
         </label>
       </div>
+
+      <div class="card" style="padding: 0.75rem; border: 1px dashed #cbd5e1;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+          <span class="tag">Objets bannis</span>
+          <button type="button" class="chip" on:click={clearBanned}>Réinitialiser</button>
+        </div>
+        {#if bannedIds.length === 0 && bannedNames.length === 0}
+          <p class="muted" style="margin: 0;">Aucun objet banni. Clique sur "Bannir" dans une carte pour l'ajouter.</p>
+        {:else}
+          <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            {#each bannedIds as id}
+              <span class="chip selected">ID {id}</span>
+            {/each}
+            {#each bannedNames as name}
+              <span class="chip selected">{name}</span>
+            {/each}
+          </div>
+        {/if}
+      </div>
     </div>
     {#if error}
       <p style="color: #dc2626; margin-top: 0.75rem;">{error}</p>
     {/if}
   </section>
+
+  {#if builds.length > 1}
+    <div class="card" style="padding: 0.75rem 1rem; border: 1px solid #e5e7eb;">
+      <p class="muted" style="margin: 0 0 0.5rem 0;">Sélection du build</p>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        {#each builds as build, idx}
+          <button
+            type="button"
+            class={`chip ${idx === selectedBuild ? "selected" : ""}`}
+            on:click={() => (selectedBuild = idx)}
+          >
+            {idx === 0 ? "Build principal" : `Alternative ${idx}`}
+            {#if build.score !== null}
+              <span style="font-weight: 600;">(score {build.score})</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   {#if copyMessage}
     <div class="card" style="padding: 0.75rem 1rem; border: 1px solid #d1fae5; background: #ecfdf3; color: #065f46;">
@@ -332,22 +401,22 @@
     </div>
   {/if}
 
-  {#if score !== null}
+  {#if currentScore !== null}
     <section class="card" style="padding: 1rem 1.25rem;">
       <div style="display: flex; align-items: center; gap: 0.5rem;">
         <span class="tag">Score</span>
-        <span style="font-weight: 700; font-size: 1.25rem;">{score}</span>
+        <span style="font-weight: 700; font-size: 1.25rem;">{currentScore}</span>
       </div>
     </section>
   {/if}
 
-  {#if stats}
+  {#if currentStats}
     <section class="card" style="padding: 1rem 1.25rem;">
       <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
         <span class="tag">Stats globales</span>
       </div>
       <div class="stats-panel">
-        <pre>{JSON.stringify(stats, null, 2)}</pre>
+        <pre>{JSON.stringify(currentStats, null, 2)}</pre>
       </div>
     </section>
   {/if}
@@ -355,15 +424,15 @@
   <section class="space-y-3">
     <div style="display: flex; align-items: center; gap: 0.5rem;">
       <h2 style="margin: 0;">Equipements</h2>
-      {#if items.length}
-        <span class="muted">({items.length} items)</span>
+      {#if currentItems.length}
+        <span class="muted">({currentItems.length} items)</span>
       {/if}
     </div>
-    {#if items.length === 0}
+    {#if currentItems.length === 0}
       <p class="muted">Aucun resultat. Lance une generation pour voir un build.</p>
     {:else}
       <div class="grid">
-        {#each items as item}
+        {#each currentItems as item}
           {#if item}
             {@const rare = (item as any).rarete as string | undefined}
             <button
@@ -414,6 +483,21 @@
                   </li>
                 {/each}
               </ul>
+              <div style="margin-top: 0.5rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                <span
+                  role="button"
+                  tabindex="0"
+                  class="chip"
+                  on:click|stopPropagation={() => banItem(item)}
+                  on:keydown|stopPropagation={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      banItem(item);
+                    }
+                  }}
+                >
+                  Bannir
+                </span>
+              </div>
             </button>
           {/if}
         {/each}

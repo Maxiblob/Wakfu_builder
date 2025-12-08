@@ -27,6 +27,8 @@ def get_best_build(
     solver: str = Query("ga", pattern="^(ga|cp)$"),
     prioritize_pa: bool = False,
     prioritize_pm: bool = False,
+    ban_ids: list[int] | None = Query(default=None, alias="ban_ids"),
+    ban_names: list[str] | None = Query(default=None, alias="ban_names"),
 ):
     if solver == "cp":
         best_build = run_optimizer_cp(
@@ -43,6 +45,8 @@ def get_best_build(
             verbose=verbose,
             prioritize_pa=prioritize_pa,
             prioritize_pm=prioritize_pm,
+            ban_ids=ban_ids,
+            ban_names=ban_names,
         )
     else:
         best_build = run_optimizer(
@@ -63,9 +67,15 @@ def get_best_build(
             require_relic=require_relic,
             prioritize_pa=prioritize_pa,
             prioritize_pm=prioritize_pm,
+            ban_ids=ban_ids,
+            ban_names=ban_names,
         )
+    alternatives = [
+        BuildResponse(score=alt[2], items=alt[0], stats=alt[1]) for alt in best_build[3]
+    ] if len(best_build) > 3 else None
     return BuildResponse(
         score=best_build[2],
         items=best_build[0],
-        stats=best_build[1]  # ta fonction pour agréger les stats finales
+        stats=best_build[1],  # ta fonction pour agréger les stats finales
+        alternatives=alternatives,
     )

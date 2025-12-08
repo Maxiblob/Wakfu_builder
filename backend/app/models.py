@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import declarative_base
 
@@ -53,8 +57,9 @@ class Item(BaseModel):
 
 class BuildResponse(BaseModel):
     score: float
-    items: list[Item]
+    items: list[dict[str, Any]]
     stats: dict[str, float]
+    alternatives: list["BuildResponse"] | None = None
 
 class wakfu_equipement(Base):
     __tablename__ = "wakfu_equipement"
