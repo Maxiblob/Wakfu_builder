@@ -1,0 +1,3 @@
+# Wakfu Builder / Optimizer
+
+Application pour générer des builds optimisés dans Wakfu en fonction d’un niveau, de préférences (maîtrises, raretés, bannis). Le backend calcule les meilleures combinaisons d’équipements via un algorithme génétique ou un solveur de contraintes, et le frontend permet de piloter les paramètres, visualiser les stats et copier rapidement les objets choisis. L’utilisateur peut forcer certaines raretés, prioriser des stats clés (PA/PM), exclure des objets et comparer des alternatives proposées. En résumé : un assistant complet pour assembler et affiner des équipements adaptés à chaque situation.
