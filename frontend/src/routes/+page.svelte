@@ -73,6 +73,7 @@
   let prioritizePM = false;
   let bannedIds: number[] = [];
   let bannedNames: string[] = [];
+  let avoidNegative: string[] = [];
   let topK = 25;
   let popSize = 60;
   let generations = 80;
@@ -113,6 +114,12 @@
       : [...effectiveSelection, key];
   };
 
+  const toggleAvoidNegative = (key: string) => {
+    avoidNegative = avoidNegative.includes(key)
+      ? avoidNegative.filter((s) => s !== key)
+      : [...avoidNegative, key];
+  };
+
   async function generateBuild() {
     loading = true;
     error = null;
@@ -141,6 +148,7 @@
       params.set("prioritize_pm", String(prioritizePM));
       bannedIds.forEach((id) => params.append("ban_ids", String(id)));
       bannedNames.forEach((name) => params.append("ban_names", name));
+      avoidNegative.forEach((stat) => params.append("avoid_negative", stat));
       params.set("solver", solver);
       if (solver === "cp") {
         params.set("verbose", "true");
@@ -368,6 +376,26 @@
             {/each}
           </div>
         {/if}
+      </div>
+
+      <div class="card" style="padding: 0.75rem; border: 1px dashed #cbd5e1;">
+        <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
+          <span class="tag">Éviter stats négatives</span>
+          {#if avoidNegative.length}
+            <span class="muted">({avoidNegative.length} stats)</span>
+          {/if}
+        </div>
+        <div class="chip-grid">
+          {#each statOptions as option}
+            <button
+              class={`chip ${avoidNegative.includes(option.key) ? "selected" : ""}`}
+              type="button"
+              on:click={() => toggleAvoidNegative(option.key)}
+            >
+              <span>{option.label}</span>
+            </button>
+          {/each}
+        </div>
       </div>
     </div>
     {#if error}

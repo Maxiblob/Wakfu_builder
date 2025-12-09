@@ -29,6 +29,7 @@ def get_best_build(
     prioritize_pm: bool = False,
     ban_ids: list[int] | None = Query(default=None, alias="ban_ids"),
     ban_names: list[str] | None = Query(default=None, alias="ban_names"),
+    avoid_negative: list[str] | None = Query(default=None, alias="avoid_negative"),
 ):
     if solver == "cp":
         best_build = run_optimizer_cp(
@@ -47,6 +48,7 @@ def get_best_build(
             prioritize_pm=prioritize_pm,
             ban_ids=ban_ids,
             ban_names=ban_names,
+            avoid_negative=avoid_negative,
         )
     else:
         best_build = run_optimizer(
@@ -69,6 +71,7 @@ def get_best_build(
             prioritize_pm=prioritize_pm,
             ban_ids=ban_ids,
             ban_names=ban_names,
+            avoid_negative=avoid_negative,
         )
     alternatives = [
         BuildResponse(score=alt[2], items=alt[0], stats=alt[1]) for alt in best_build[3]

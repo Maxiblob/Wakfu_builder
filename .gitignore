@@ -5,9 +5,6 @@ docker-compose.prod.yml
 makefile
 backend/Dockerfile.dev
 backend/Dockerfile.prod
-backend/app/routers/__pycache__/__init__.cpython-312.pyc
-backend/app/routers/__pycache__/builds.cpython-312.pyc
-backend/app/routers/__pycache__/items.cpython-312.pyc
 frontend/Dockerfile.dev
 frontend/Dockerfile.prod
 frontend/postcss.config.js
@@ -22,3 +19,4 @@ backend/app/__pycache__/
 frontend/node_modules/
 start.sh
 .gitignore
+backend/app/routers/__pycache__/

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Any
 
 import pandas as pd
+import numpy as np
 from ortools.sat.python import cp_model
 from sqlalchemy.orm import Session
 
@@ -45,6 +46,15 @@ def _prefer_legendary_variants(group: pd.DataFrame) -> pd.DataFrame:
         else:
             chosen_rows.append(sub.iloc[0])
     return pd.DataFrame(chosen_rows)
+
+
+def _to_python_value(val: Any) -> Any:
+    """Convertit numpy/pandas en types natifs pour la sérialisation."""
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        return float(val)
+    return val
 
 
 def _build_pools_cp(
@@ -92,6 +102,7 @@ def run_optimizer_cp(
     prioritize_pm: bool = False,
     ban_ids: Iterable[int] | None = None,
     ban_names: Iterable[str] | None = None,
+    avoid_negative: Iterable[str] | None = None,
 ) -> tuple[list[dict], dict[str, float], float, list[tuple[list[dict], dict[str, float], float]]]:
     """Résout l'optimisation d'équipement avec CP-SAT (déterministe)."""
     poids = _resolve_weights(target_stats, POIDS_STATS)
@@ -100,7 +111,13 @@ def run_optimizer_cp(
     if prioritize_pm:
         poids["pm"] = max(poids.get("pm", 0.0), 10000.0)
 
-    df_all = load_equipements(db, level_max=level, ban_ids=ban_ids, ban_names=ban_names)
+    df_all = load_equipements(
+        db,
+        level_max=level,
+        ban_ids=ban_ids,
+        ban_names=ban_names,
+        avoid_negative=avoid_negative,
+    )
     if df_all.empty:
         return [], {}, 0.0, []
 
@@ -253,7 +270,7 @@ def run_optimizer_cp(
                 if solver.Value(var):
                     chosen_vars.append(var)
                     row = pool.loc[idx]
-                    build.append(dict(row))
+                    build.append({k: _to_python_value(v) for k, v in dict(row).items()})
                     for col, val in row.drop(labels=list(META_COLS), errors="ignore").items():
                         try:
                             stats_sum[col] = stats_sum.get(col, 0.0) + float(val or 0.0)

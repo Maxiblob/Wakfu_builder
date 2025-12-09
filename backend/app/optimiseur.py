@@ -8,6 +8,7 @@ from numbers import Real
 from typing import Any, Iterable
 
 import pandas as pd
+import numpy as np
 from sqlalchemy.orm import Session
 
 from app.models import wakfu_equipement
@@ -224,11 +225,21 @@ def _compute_object_scores(df: pd.DataFrame, poids: StatWeights) -> pd.Series:
     return positive_stats.mul(weights, axis=1).sum(axis=1)
 
 
+def _to_python_value(val: Any) -> Any:
+    """Convertit numpy/pandas en types natifs pour la sérialisation."""
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        return float(val)
+    return val
+
+
 def load_equipements(
     db: Session,
     level_max: int | None = None,
     ban_ids: Iterable[int] | None = None,
     ban_names: Iterable[str] | None = None,
+    avoid_negative: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """Load equipment entries from the database as a dataframe, filtered and deduped."""
     query = db.query(wakfu_equipement)
@@ -256,6 +267,10 @@ def load_equipements(
     if ban_names and "nom" in df.columns:
         ban_norm = {str(n).strip().lower() for n in ban_names}
         df = df[df["nom"].str.strip().str.lower().map(lambda x: x not in ban_norm)]
+    if avoid_negative:
+        for stat in avoid_negative:
+            if stat in df.columns:
+                df = df[df[stat].fillna(0) >= 0]
 
     df = df.reset_index(drop=True)
     return df
@@ -621,6 +636,7 @@ def run_optimizer(
     prioritize_pm: bool = False,
     ban_ids: Iterable[int] | None = None,
     ban_names: Iterable[str] | None = None,
+    avoid_negative: Iterable[str] | None = None,
 ) -> tuple[list[dict[str, Any]], BuildStats, float, list[tuple[list[dict[str, Any]], BuildStats, float]]]:
     """Complete optimisation pipeline returning the best build, stats, and score."""
     poids = _resolve_weights(target_stats, POIDS_STATS)
@@ -631,7 +647,13 @@ def run_optimizer(
     if prioritize_pm:
         poids["pm"] = max(poids.get("pm", 0.0), 10000.0)
 
-    df_all = load_equipements(db, level_max=level, ban_ids=ban_ids, ban_names=ban_names)
+    df_all = load_equipements(
+        db,
+        level_max=level,
+        ban_ids=ban_ids,
+        ban_names=ban_names,
+        avoid_negative=avoid_negative,
+    )
     if df_all.empty:
         return [], {}, 0.0, []
 
@@ -665,6 +687,6 @@ def run_optimizer(
     build: list[dict[str, Any]] = []
     for idx in best.genes.values():
         row = _get_item_row(df_all, idx)
-        build.append(dict(row))
+        build.append({k: _to_python_value(v) for k, v in dict(row).items()})
 
     return build, best_stats, best_score, []
