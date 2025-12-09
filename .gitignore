@@ -20,3 +20,5 @@ frontend/node_modules/postcss.config.js
 nginx/nginx.conf
 backend/app/__pycache__/
 frontend/node_modules/
+start.sh
+.gitignore
